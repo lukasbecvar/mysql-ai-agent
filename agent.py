@@ -5,11 +5,34 @@ from tabulate import tabulate
 import re
 from prompt_toolkit import prompt
 from prompt_toolkit.history import InMemoryHistory
+import threading
+import itertools
+import time
+import sys
+
+
 
 # Load config from YAML
 def load_config():
     with open("config.yml", "r") as f:
         return yaml.safe_load(f)
+
+def start_spinner(message="Working..."):
+    done = threading.Event()
+
+    def spinner():
+        for char in itertools.cycle("|/-\\"):
+            if done.is_set():
+                break
+            sys.stdout.write(f"\r{message} {char}")
+            sys.stdout.flush()
+            time.sleep(0.1)
+        sys.stdout.write("\r" + " " * (len(message) + 2) + "\r")
+
+    thread = threading.Thread(target=spinner)
+    thread.start()
+    return done
+
 
 def test_db_connection(db_conf):
     try:
@@ -106,22 +129,26 @@ Please provide a corrected SQL query wrapped in triple backticks, no explanation
 """
 
 # Build prompt for result explanation
-def prompt_explain(sql, cols, rows, user_lang):
+def prompt_explain(sql, cols, rows, user_prompt):
     preview = tabulate(rows[:5], headers=cols, tablefmt="grid") if cols else str(rows)
     return f"""
-You are a helpful assistant that explains SQL query results in the user's language ({user_lang}).
+You are a helpful assistant that explains SQL query results.
+
+The user's original request was:
+\"\"\"{user_prompt}\"\"\"
 
 The SQL query executed was:
 
 ```sql
 {sql}
+
 ```
 
 Here is a preview of the result (max 5 rows):
 
 {preview}
 
-Please provide a short, clear summary of what this result means.
+Please provide a short, clear summary of what this result means in user's language.
 """
 
 def main():
@@ -144,6 +171,8 @@ def main():
     while True:
         try:
             user_input = prompt("Enter your request > ", history=history).strip()
+            if not user_input:
+                continue
         except (EOFError, KeyboardInterrupt):
             print("\nBye!")
             break
@@ -161,8 +190,9 @@ User request:
 \"""{user_input}\"""
 """
 
-        print("🧠 Waiting for response from AI...")
+        spinner_done = start_spinner("🧠 Creating SQL query")
         response = chat.send_message(prompt_sql)
+        spinner_done.set()
         sql_blocks = extract_all_sql_blocks(response.text)
 
         for i, sql_query in enumerate(sql_blocks, 1):
@@ -204,9 +234,10 @@ User request:
                         print(result)
 
                     # Explanation
-                    explain_prompt = prompt_explain(sql_query, cols, result, "English")
-                    print("📊 Explaining results...")
+                    explain_prompt = prompt_explain(sql_query, cols, result, user_input)
+                    spinner_done = start_spinner("📖 Explaining results")
                     explain_response = chat.send_message(explain_prompt)
+                    spinner_done.set()
 
                     print(f"""\nExplanation:
 {explain_response.text.strip()}""")
