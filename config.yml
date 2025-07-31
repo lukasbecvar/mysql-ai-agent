@@ -1,0 +1,10 @@
+database:
+  host: 127.0.0.1
+  port: 3306
+  user: root
+  password: root
+  name: mysql
+
+google:
+  api_key: "AIzaSyA-EXTbYFxcrK2K1H6-rKGZDQFljbBWxlw"
+  model: "gemini-2.5-flash"
