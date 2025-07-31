@@ -3,20 +3,36 @@ import google.generativeai as genai
 import mysql.connector
 from tabulate import tabulate
 import re
+from prompt_toolkit import prompt
+from prompt_toolkit.history import InMemoryHistory
 
 # Load config from YAML
 def load_config():
     with open("config.yml", "r") as f:
         return yaml.safe_load(f)
 
-# Extract SQL from LLM response (in triple backticks)
-def extract_sql(text):
-    m = re.search(r"```sql\n(.*?)```", text, re.DOTALL | re.IGNORECASE)
-    if m:
-        return m.group(1).strip()
-    return text.strip()
+def test_db_connection(db_conf):
+    try:
+        conn = mysql.connector.connect(
+            host=db_conf["host"],
+            user=db_conf["user"],
+            password=db_conf["password"],
+            database=db_conf["name"],
+            port=db_conf.get("port", 3306),
+        )
+        print(f"✅ Connected to {db_conf['name']} on {db_conf['host']}:{db_conf.get('port', 3306)} as {db_conf['user']}")
+    except mysql.connector.Error as e:
+        print(f"❌ Failed to connect to database: {e}")
+        exit(1)
+    finally:
+        conn.close()
 
-# Run SQL query and return columns+rows or error string
+# Extract all SQL code blocks from Gemini response
+def extract_all_sql_blocks(text):
+    blocks = re.findall(r"```sql\n(.*?)```", text, re.DOTALL | re.IGNORECASE)
+    return [b.strip() for b in blocks] if blocks else [text.strip()]
+
+
 def run_sql(sql, db_conf):
     try:
         conn = mysql.connector.connect(
@@ -27,19 +43,32 @@ def run_sql(sql, db_conf):
             port=db_conf.get("port", 3306),
         )
         cursor = conn.cursor()
-        cursor.execute(sql)
-        if cursor.description:
-            cols = [desc[0] for desc in cursor.description]
-            rows = cursor.fetchall()
-            return cols, rows
-        else:
-            conn.commit()
-            return None, f"Affected rows: {cursor.rowcount}"
+
+        # Split multiple statements by ';' if exist, remove empty parts
+        statements = [stmt.strip() for stmt in sql.split(';') if stmt.strip()]
+
+        last_cols = None
+        last_rows = None
+
+        for stmt in statements:
+            cursor.execute(stmt)
+            if cursor.description:
+                last_cols = [desc[0] for desc in cursor.description]
+                last_rows = cursor.fetchall()
+            else:
+                conn.commit()
+                last_cols = None
+                last_rows = f"Affected rows: {cursor.rowcount}"
+
+        return last_cols, last_rows
+
     except mysql.connector.Error as e:
         return None, f"MySQL Error: {e}"
+
     finally:
         cursor.close()
         conn.close()
+
 
 def prompt_for_sql_with_history(user_prompt, history):
     history_text = ""
@@ -100,66 +129,91 @@ def main():
     genai.configure(api_key=config["google"]["api_key"])
     model = genai.GenerativeModel(config["google"].get("model", "gemini-1.5-flash"))
 
+    # Persistent chat session for single run
+    chat = model.start_chat()
+
+    # DB check
+    test_db_connection(config["database"])
+
+    history = InMemoryHistory()
     conversation_history = []
     error_history = []
 
-    print("AI MySQL Natural Language Agent (type 'exit' to quit)")
+    print("\nAI MySQL Natural Language Agent (type 'exit' to quit)")
 
     while True:
-        user_input = input("Enter your request > ").strip()
+        try:
+            user_input = prompt("Enter your request > ", history=history).strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nBye!")
+            break
+
         if user_input.lower() in ["exit", "quit"]:
             print("Bye!")
             break
 
-        # Generate SQL query with context
-        prompt_sql = prompt_for_sql_with_history(user_input, conversation_history)
-        response = model.generate_content(prompt_sql)
-        sql_query = extract_sql(response.text)
+        # Instruction to generate possibly multiple SQL blocks
+        prompt_sql = f"""
+You are a MySQL expert. Convert the following user request into safe, valid MySQL query or multiple queries (if needed).
+Respond ONLY with SQL blocks in triple backticks. Do NOT add explanations or comments outside the code.
 
-        print(f"""Generated SQL: 
-{sql_query} 
+User request:
+\"""{user_input}\"""
+"""
+
+        print("🧠 Waiting for response from AI...")
+        response = chat.send_message(prompt_sql)
+        sql_blocks = extract_all_sql_blocks(response.text)
+
+        for i, sql_query in enumerate(sql_blocks, 1):
+            print(f"""\n🔹 SQL Block {i}:
+{sql_query}
 """)
-        attempt = 0
-        while attempt < 5:
-            cols, result = run_sql(sql_query, config["database"])
 
-            if isinstance(result, str) and result.startswith("MySQL Error"):
-                print(f"SQL error: {result}")
+            attempt = 0
+            while attempt < 5:
+                cols, result = run_sql(sql_query, config["database"])
 
-                # Check repeated errors
-                if any(h["sql"] == sql_query and h["error"] == result for h in error_history):
-                    print("Repeated error detected, stopping retries.")
-                    break
+                if isinstance(result, str) and result.startswith("MySQL Error"):
+                    print(f"❌ SQL error: {result}")
 
-                error_history.append({"sql": sql_query, "error": result})
-                fix_prompt = prompt_fix_sql(sql_query, result, error_history)
-                fix_response = model.generate_content(fix_prompt)
-                fixed_sql = extract_sql(fix_response.text)
+                    # Avoid retrying same known-bad SQL+error combo
+                    if any(h["sql"] == sql_query and h["error"] == result for h in error_history):
+                        print("⚠️ Repeated error detected, skipping to next block.")
+                        break
 
-                print(f"""Trying to fix SQL, new query:
+                    error_history.append({"sql": sql_query, "error": result})
+
+                    fix_prompt = prompt_fix_sql(sql_query, result, error_history)
+                    print("🔧 Trying to fix SQL...")
+                    fix_response = chat.send_message(fix_prompt)
+                    fixed_sql_blocks = extract_all_sql_blocks(fix_response.text)
+                    fixed_sql = fixed_sql_blocks[0] if fixed_sql_blocks else ""
+
+                    print(f"""🛠️  New fixed query:
 {fixed_sql}
 """)
 
-                sql_query = fixed_sql
-                attempt += 1
-                continue
-            else:
-                if cols:
-                    print(tabulate(result[:5], headers=cols, tablefmt="grid"))
+                    sql_query = fixed_sql
+                    attempt += 1
+                    continue
                 else:
-                    print(result)
+                    if cols:
+                        print(tabulate(result[:5], headers=cols, tablefmt="grid"))
+                    else:
+                        print(result)
 
-                user_lang = "English"
+                    # Explanation
+                    explain_prompt = prompt_explain(sql_query, cols, result, "English")
+                    print("📊 Explaining results...")
+                    explain_response = chat.send_message(explain_prompt)
 
-                explain_prompt = prompt_explain(sql_query, cols, result, user_lang)
-                explain_response = model.generate_content(explain_prompt)
-                print(f"""Explanation:
+                    print(f"""\nExplanation:
 {explain_response.text.strip()}""")
 
-                # Add to conversation history for context next round
-                conversation_history.append({"user": user_input, "sql": sql_query})
+                    conversation_history.append({"user": user_input, "sql": sql_query})
+                    break
 
-                break
 
 if __name__ == "__main__":
     main()
