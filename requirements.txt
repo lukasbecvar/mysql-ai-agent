@@ -1,6 +1,6 @@
-google-generativeai
 mysql-connector-python
-rich
-commonmark
+google-generativeai
 prompt-toolkit
 python-dotenv
+commonmark
+rich

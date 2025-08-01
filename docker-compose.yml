@@ -1,3 +1,4 @@
+# definition for testing MySQL database
 services:
     mysql:
         image: mysql:8

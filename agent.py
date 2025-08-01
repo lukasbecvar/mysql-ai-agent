@@ -10,30 +10,30 @@ import mysql.connector
 from rich.table import Table
 from rich.panel import Panel
 from rich.style import Style
-from rich.console import Console
 from dotenv import load_dotenv
+from rich.console import Console
 from prompt_toolkit import prompt
 from rich.markdown import Markdown
 import google.generativeai as genai
 from prompt_toolkit.history import InMemoryHistory
 
-# initialize rich Console
+# initialize rich console
 console = Console()
 
 # define styles
-style_success = Style(color="green")
 style_error = Style(color="red")
 style_info = Style(color="cyan")
+style_success = Style(color="green")
 style_warning = Style(color="yellow")
 style_sql = Style(color="blue", bold=True)
 
 # load config from .env files
 def load_config():
-    # Load the main .env file to get APP_ENV
+    # load main .env file to get APP_ENV
     load_dotenv(dotenv_path=".env")
     app_env = os.getenv("APP_ENV", "dev")
 
-    # Load the environment-specific .env file
+    # load environment-specific .env file
     env_file = f".env.{app_env}"
     if not os.path.exists(env_file):
         console.print(f"Error: Environment file '{env_file}' not found.", style=style_error)
@@ -42,7 +42,7 @@ def load_config():
     load_dotenv(dotenv_path=env_file, override=True)
     console.print(f"Running in [bold { 'red' if app_env == 'prod' else 'yellow' }]{app_env.upper()}[/bold { 'red' if app_env == 'prod' else 'yellow' }] mode.", style=style_info)
 
-    # Return a dictionary of the loaded settings
+    # return a dictionary of loaded settings
     return {
         "database": {
             "host": os.getenv("DB_HOST"),
@@ -107,31 +107,49 @@ def test_db_connection(db_conf):
         if conn and conn.is_connected():
             conn.close()
 
-
-# Extract all SQL code blocks from Gemini response
+# extract all SQL code blocks from gemini response
 def extract_all_sql_blocks(text):
     blocks = re.findall(r"```sql\n(.*?)```", text, re.DOTALL | re.IGNORECASE)
     return [b.strip() for b in blocks] if blocks else []
 
-
+# extract JSON blocks from response
 def extract_json_blocks(text):
     """Extract JSON blocks from response"""
     blocks = re.findall(r"```json\n(.*?)```", text, re.DOTALL | re.IGNORECASE)
     return [b.strip() for b in blocks] if blocks else []
 
-
+# check if SQL statement is safe (read-only)
 def is_safe_sql(sql):
     """Check if SQL statement is safe (read-only)."""
-    # List of keywords that modify data or settings
-    unsafe_keywords = ["CREATE", "ALTER", "DROP", "TRUNCATE", "INSERT", "UPDATE", "DELETE", "REPLACE", "GRANT", "REVOKE", "SET", "START", "COMMIT", "ROLLBACK", "SAVEPOINT", "LOCK", "UNLOCK"]
+    # list of keywords that modify data or settings
+    unsafe_keywords = [
+        "SET", 
+        "DROP",
+        "LOCK", 
+        "ALTER",
+        "GRANT", 
+        "START", 
+        "UNLOCK",
+        "CREATE",
+        "REVOKE", 
+        "INSERT",
+        "UPDATE",
+        "DELETE", 
+        "COMMIT", 
+        "REPLACE",
+        "TRUNCATE", 
+        "ROLLBACK", 
+        "SAVEPOINT" 
+    ]
     
-    # Check for any unsafe keywords at the beginning of the statement
+    # check for any unsafe keywords at beginning of the statement
     sql_upper = sql.strip().upper()
     for keyword in unsafe_keywords:
         if sql_upper.startswith(keyword):
             return False
     return True
 
+# run SQL query command
 def run_sql(sql, db_conf, safe_mode=False):
     """Run SQL query with optional safe mode confirmation."""
     statements = [stmt.strip() for stmt in sql.split(';') if stmt.strip()]
@@ -178,21 +196,22 @@ def run_sql(sql, db_conf, safe_mode=False):
             conn.close()
 
 
+# format query results in a concise way for AI processing
 def format_result_for_ai(cols, rows):
     """Format query results in a concise way for AI processing"""
     if not cols:
         return str(rows)
     
-    # Limit to first 10 rows for AI analysis
+    # limit to first 10 rows for AI analysis
     limited_rows = rows[:10] if isinstance(rows, list) else rows
     
-    # Create a structured representation
+    # create structured representation
     result_data = []
     if isinstance(limited_rows, list):
         for row in limited_rows:
             result_data.append(dict(zip(cols, row)))
     
-    # Create a Rich table for preview
+    # create rich table for preview
     table = Table(show_header=True, header_style="bold magenta")
     for col in cols:
         table.add_column(col)
@@ -201,7 +220,7 @@ def format_result_for_ai(cols, rows):
     for row in preview_rows:
         table.add_row(*[str(item) for item in row])
 
-    # To send a string representation of the table to the AI
+    # to send string representation of the table to the AI
     from io import StringIO
     from rich.console import Console
     capture_console = Console(file=StringIO())
@@ -215,7 +234,7 @@ def format_result_for_ai(cols, rows):
         "preview": preview_str
     }
 
-
+# create prompt for multi-step operation planning
 def create_multistep_prompt(user_request, execution_history=None):
     """Create prompt for multi-step operation planning"""
     history_context = ""
@@ -264,7 +283,7 @@ Examples of multi-step operations:
 """
     return prompt
 
-
+# create prompt for generating SQL based on previous results
 def create_dependent_step_prompt(step_info, previous_results, user_request):
     """Create prompt for generating SQL based on previous results"""
     prompt = f"""
@@ -285,7 +304,7 @@ YOUR_SQL_QUERY_HERE
 """
     return prompt
 
-
+# analyze step results and potentially modify the plan
 def analyze_step_results(step_info, result_data, user_request, remaining_steps):
     """Create prompt for analyzing step results and potentially modifying the plan"""
     prompt = f"""
@@ -317,18 +336,17 @@ Respond in JSON format:
 """
     return prompt
 
-
+# execute a multi-step operation plan
 def execute_multistep_operation(plan, user_request, chat, db_conf, safe_mode=False):
     """Execute a multi-step operation plan"""
     execution_history = []
     current_plan = plan.copy()
-    
     console.print(Panel(f"Starting multi-step operation with {len(current_plan)} planned steps", style=style_info, title="Multi-step Operation"))
     
     for step_idx, step_info in enumerate(current_plan):
         console.print(f"\n[bold cyan]Step {step_info['step']}:[/bold cyan] {step_info['description']}")
         
-        # Generate SQL if it depends on previous results
+        # generate SQL if it depends on previous results
         if step_info['sql'] == 'DEPENDS_ON_PREVIOUS':
             if not execution_history:
                 console.print("Cannot depend on previous results - no previous steps executed", style=style_error)
@@ -354,12 +372,12 @@ def execute_multistep_operation(plan, user_request, chat, db_conf, safe_mode=Fal
         
         console.print(Panel(step_info['sql'], style=style_sql, title="Executing SQL"))
         
-        # Execute the SQL
+        # execute SQL
         cols, result = run_sql(step_info['sql'], db_conf, safe_mode=safe_mode)
         
         if isinstance(result, str) and result.startswith("MySQL Error"):
             console.print(f"SQL error: {result}", style=style_error)
-            # Try to fix the SQL
+            # try to fix SQL
             fix_prompt = f"""
 Fix this MySQL query that caused an error:
 
@@ -381,7 +399,7 @@ Provide ONLY the corrected SQL in triple backticks.
                 console.print(f"Still failed after fix attempt: {result}", style=style_error)
                 continue
         
-        # Display results
+        # display results
         if cols:
             table = Table(show_header=True, header_style="bold magenta")
             for col in cols:
@@ -396,10 +414,10 @@ Provide ONLY the corrected SQL in triple backticks.
         else:
             console.print(str(result), style=style_success)
         
-        # Format results for AI processing
+        # format results for AI processing
         result_data = format_result_for_ai(cols, result)
         
-        # Store execution history
+        # store execution history
         execution_step = {
             'step': step_info['step'],
             'description': step_info['description'],
@@ -409,7 +427,7 @@ Provide ONLY the corrected SQL in triple backticks.
         }
         execution_history.append(execution_step)
         
-        # Analyze results if needed
+        # analyze results if needed
         if step_info.get('analysis_needed', False) and step_idx < len(current_plan) - 1:
             console.print("Analyzing results for next steps...", style=style_info)
             
@@ -428,7 +446,7 @@ Provide ONLY the corrected SQL in triple backticks.
                     
                     if analysis['action'] == 'modify' and 'modified_steps' in analysis:
                         console.print("Modifying remaining steps based on analysis...", style=style_warning)
-                        # Replace remaining steps with modified ones
+                        # replace remaining steps with modified ones
                         current_plan = current_plan[:step_idx + 1] + analysis['modified_steps']
                     elif analysis['action'] == 'skip':
                         console.print("Skipping remaining steps based on analysis", style=style_warning)
@@ -439,7 +457,7 @@ Provide ONLY the corrected SQL in triple backticks.
     
     return execution_history
 
-
+# display help message
 def display_help():
     """Displays the help message."""
     console.print(Panel(
@@ -475,7 +493,7 @@ The agent is configured through the `config.yml` file.
         style="green"
     ))
 
-
+# main initialization
 def main():
     safe_mode = '--safe-mode' in sys.argv
     if '-h' in sys.argv or '--help' in sys.argv:
@@ -489,13 +507,13 @@ def main():
     genai.configure(api_key=config["google"]["api_key"])
     model = genai.GenerativeModel(config["google"].get("model", "gemini-1.5-flash"))
 
-    # Persistent chat session for single run
+    # persistent chat session for single run
     chat = model.start_chat()
 
-    # DB check
+    # db check
     test_db_connection(config["database"])
 
-    history = InMemoryHistory()
+    # history for multi-step operation planning
     conversation_history = []
 
     while True:
@@ -511,14 +529,14 @@ def main():
             console.print("Bye!", style=style_info)
             break
 
-        # Determine if this is a single or multi-step operation
+        # determine if this is a single or multi-step operation
         planning_prompt = create_multistep_prompt(user_input)
         
         stop_spinner = start_spinner("Analyzing request")
         response = chat.send_message(planning_prompt)
         stop_spinner()
         
-        # Try to extract JSON plan
+        # try to extract JSON plan
         json_blocks = extract_json_blocks(response.text)
         
         if json_blocks:
@@ -526,7 +544,7 @@ def main():
                 plan_data = json.loads(json_blocks[0])
                 
                 if plan_data["type"] == "single":
-                    # Handle single-step operation (original behavior)
+                    # handle single-step operation (original behavior)
                     console.print(Panel("Single-step operation", style=style_info, title="Operation Type"))
                     sql_query = plan_data["sql"]
                     console.print(Panel(sql_query, style=style_sql, title="SQL Query"))
@@ -551,7 +569,7 @@ def main():
                     else:
                         console.print(str(result), style=style_success)
                     
-                    # Get explanation
+                    # get explanation
                     if cols:
                         preview = format_result_for_ai(cols, result)['preview']
                     else:
@@ -572,12 +590,12 @@ def main():
                     console.print(Panel(Markdown(explain_response.text.strip()), style=style_info, title="Vysvětlení"))
                     
                 else:
-                    # Handle multi-step operation
+                    # handle multi-step operation
                     execution_history = execute_multistep_operation(
                         plan_data["plan"], user_input, chat, config["database"], safe_mode=safe_mode
                     )
                     
-                    # Provide final summary
+                    # provide final summary
                     if execution_history:
                         summary_prompt = f"""
                         Provide a final summary in Czech of this multi-step database operation:
@@ -600,7 +618,7 @@ def main():
                 
             except json.JSONDecodeError:
                 console.print(Panel("Could not parse operation plan, trying simple SQL generation...", title="Warning", style=style_warning))
-                # Fallback to original single-query behavior
+                # fallback to original single-query behavior
                 sql_blocks = extract_all_sql_blocks(response.text)
                 if sql_blocks:
                     for sql_query in sql_blocks:
@@ -624,9 +642,6 @@ def main():
         else:
             console.print(Panel("Could not understand the request format. Please try again.", title="Error", style=style_error))
 
-
-
-
+# init main function
 if __name__ == "__main__":
     main()
-    
