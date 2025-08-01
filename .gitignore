@@ -1,2 +1,5 @@
 # testing database data folder
 mysql-data/
+
+# production environment configuration
+.env.prod

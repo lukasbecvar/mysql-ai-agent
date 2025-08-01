@@ -1,5 +1,6 @@
 google-generativeai
 mysql-connector-python
-pyyaml
 rich
 commonmark
+prompt-toolkit
+python-dotenv

@@ -1,7 +1,7 @@
 #!/bin/python3
+import os
 import re
 import sys
-import yaml
 import time
 import json
 import itertools
@@ -11,6 +11,7 @@ from rich.table import Table
 from rich.panel import Panel
 from rich.style import Style
 from rich.console import Console
+from dotenv import load_dotenv
 from prompt_toolkit import prompt
 from rich.markdown import Markdown
 import google.generativeai as genai
@@ -26,10 +27,35 @@ style_info = Style(color="cyan")
 style_warning = Style(color="yellow")
 style_sql = Style(color="blue", bold=True)
 
-# load config from YAML
+# load config from .env files
 def load_config():
-    with open("config.yml", "r") as f:
-        return yaml.safe_load(f)
+    # Load the main .env file to get APP_ENV
+    load_dotenv(dotenv_path=".env")
+    app_env = os.getenv("APP_ENV", "dev")
+
+    # Load the environment-specific .env file
+    env_file = f".env.{app_env}"
+    if not os.path.exists(env_file):
+        console.print(f"Error: Environment file '{env_file}' not found.", style=style_error)
+        exit(1)
+    
+    load_dotenv(dotenv_path=env_file, override=True)
+    console.print(f"Running in [bold { 'red' if app_env == 'prod' else 'yellow' }]{app_env.upper()}[/bold { 'red' if app_env == 'prod' else 'yellow' }] mode.", style=style_info)
+
+    # Return a dictionary of the loaded settings
+    return {
+        "database": {
+            "host": os.getenv("DB_HOST"),
+            "port": int(os.getenv("DB_PORT", 3306)),
+            "user": os.getenv("DB_USER"),
+            "password": os.getenv("DB_PASSWORD"),
+            "name": os.getenv("DB_NAME"),
+        },
+        "google": {
+            "api_key": os.getenv("GOOGLE_API_KEY"),
+            "model": os.getenv("GOOGLE_MODEL", "gemini-1.5-flash"),
+        }
+    }
 
 # start loading spinner
 def start_spinner(message="Working..."):
