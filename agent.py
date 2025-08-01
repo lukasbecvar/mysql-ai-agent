@@ -92,7 +92,28 @@ def extract_json_blocks(text):
     return [b.strip() for b in blocks] if blocks else []
 
 
-def run_sql(sql, db_conf):
+def is_safe_sql(sql):
+    """Check if SQL statement is safe (read-only)."""
+    # List of keywords that modify data or settings
+    unsafe_keywords = ["CREATE", "ALTER", "DROP", "TRUNCATE", "INSERT", "UPDATE", "DELETE", "REPLACE", "GRANT", "REVOKE", "SET", "START", "COMMIT", "ROLLBACK", "SAVEPOINT", "LOCK", "UNLOCK"]
+    
+    # Check for any unsafe keywords at the beginning of the statement
+    sql_upper = sql.strip().upper()
+    for keyword in unsafe_keywords:
+        if sql_upper.startswith(keyword):
+            return False
+    return True
+
+def run_sql(sql, db_conf, safe_mode=False):
+    """Run SQL query with optional safe mode confirmation."""
+    statements = [stmt.strip() for stmt in sql.split(';') if stmt.strip()]
+    
+    if safe_mode and any(not is_safe_sql(stmt) for stmt in statements):
+        console.print(Panel(sql, style=style_warning, title="Confirmation Required"))
+        confirmation = prompt("This command may modify the database. Do you want to proceed? (Y/n) > ").lower()
+        if confirmation not in ['y', 'yes', '']:
+            return None, "Execution cancelled by user."
+
     try:
         conn = mysql.connector.connect(
             host=db_conf["host"],
@@ -102,9 +123,6 @@ def run_sql(sql, db_conf):
             port=db_conf.get("port", 3306),
         )
         cursor = conn.cursor()
-
-        # Split multiple statements by ';' if exist, remove empty parts
-        statements = [stmt.strip() for stmt in sql.split(';') if stmt.strip()]
 
         last_cols = None
         last_rows = None
@@ -125,8 +143,9 @@ def run_sql(sql, db_conf):
         return None, f"MySQL Error: {e}"
 
     finally:
-        cursor.close()
-        conn.close()
+        if 'conn' in locals() and conn.is_connected():
+            cursor.close()
+            conn.close()
 
 
 def format_result_for_ai(cols, rows):
@@ -269,7 +288,7 @@ Respond in JSON format:
     return prompt
 
 
-def execute_multistep_operation(plan, user_request, chat, db_conf):
+def execute_multistep_operation(plan, user_request, chat, db_conf, safe_mode=False):
     """Execute a multi-step operation plan"""
     execution_history = []
     current_plan = plan.copy()
@@ -306,7 +325,7 @@ def execute_multistep_operation(plan, user_request, chat, db_conf):
         console.print(Panel(step_info['sql'], style=style_sql, title="Executing SQL"))
         
         # Execute the SQL
-        cols, result = run_sql(step_info['sql'], db_conf)
+        cols, result = run_sql(step_info['sql'], db_conf, safe_mode=safe_mode)
         
         if isinstance(result, str) and result.startswith("MySQL Error"):
             console.print(f"SQL error: {result}", style=style_error)
@@ -326,7 +345,7 @@ Provide ONLY the corrected SQL in triple backticks.
             if fixed_sql_blocks:
                 step_info['sql'] = fixed_sql_blocks[0]
                 console.print(Panel(step_info['sql'], style=style_sql, title="Retrying with fixed query"))
-                cols, result = run_sql(step_info['sql'], db_conf)
+                cols, result = run_sql(step_info['sql'], db_conf, safe_mode=safe_mode)
             
             if isinstance(result, str) and result.startswith("MySQL Error"):
                 console.print(f"Still failed after fix attempt: {result}", style=style_error)
@@ -407,6 +426,11 @@ Run the agent without any arguments to start an interactive session:
 python agent.py
 ```
 
+To run in safe mode, which requires confirmation for potentially destructive commands:
+```bash
+python agent.py --safe-mode
+```
+
 ## Commands
 
 - `exit` or `quit`: Exit the interactive session.
@@ -423,9 +447,13 @@ The agent is configured through the `config.yml` file.
 
 
 def main():
+    safe_mode = '--safe-mode' in sys.argv
     if '-h' in sys.argv or '--help' in sys.argv:
         display_help()
         return
+
+    if safe_mode:
+        console.print(Panel("Safe mode is enabled. You will be asked for confirmation before executing any potentially destructive commands.", style=style_warning, title="Warning"))
 
     config = load_config()
     genai.configure(api_key=config["google"]["api_key"])
@@ -473,7 +501,7 @@ def main():
                     sql_query = plan_data["sql"]
                     console.print(Panel(sql_query, style=style_sql, title="SQL Query"))
                     
-                    cols, result = run_sql(sql_query, config["database"])
+                    cols, result = run_sql(sql_query, config["database"], safe_mode=safe_mode)
                     
                     if isinstance(result, str) and result.startswith("MySQL Error"):
                         console.print(f"SQL error: {result}", style=style_error)
@@ -494,12 +522,17 @@ def main():
                         console.print(str(result), style=style_success)
                     
                     # Get explanation
+                    if cols:
+                        preview = format_result_for_ai(cols, result)['preview']
+                    else:
+                        preview = str(result)
+
                     explain_prompt = f"""
                     Explain the results of this SQL query in Czech:
                     
                     User request: {user_input}
                     SQL: {sql_query}
-                    Result preview: {format_result_for_ai(cols, result)['preview']}
+                    Result preview: {preview}
                     """
                     
                     spinner_done = start_spinner("Explaining results")
@@ -511,7 +544,7 @@ def main():
                 else:
                     # Handle multi-step operation
                     execution_history = execute_multistep_operation(
-                        plan_data["plan"], user_input, chat, config["database"]
+                        plan_data["plan"], user_input, chat, config["database"], safe_mode=safe_mode
                     )
                     
                     # Provide final summary
@@ -542,7 +575,7 @@ def main():
                 if sql_blocks:
                     for sql_query in sql_blocks:
                         console.print(Panel(sql_query, style=style_sql, title="Executing SQL"))
-                        cols, result = run_sql(sql_query, config["database"])
+                        cols, result = run_sql(sql_query, config["database"], safe_mode=safe_mode)
                         
                         if isinstance(result, str) and result.startswith("MySQL Error"):
                             console.print(f"SQL error: {result}", style=style_error)
