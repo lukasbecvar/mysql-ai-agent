@@ -61,6 +61,7 @@ def start_spinner(message="Working..."):
 
 # test database connection
 def test_db_connection(db_conf):
+    conn = None
     try:
         conn = mysql.connector.connect(
             host=db_conf["host"],
@@ -74,10 +75,11 @@ def test_db_connection(db_conf):
             subtitle="Success",
             style="green"))
     except mysql.connector.Error as e:
-        console.print(f"Failed to connect to database: {e}", style=style_error)
+        console.print(Panel(f"Failed to connect to database: {e}", title="Database Connection Error", style=style_error))
         exit(1)
     finally:
-        conn.close()
+        if conn and conn.is_connected():
+            conn.close()
 
 
 # Extract all SQL code blocks from Gemini response
@@ -140,7 +142,9 @@ def run_sql(sql, db_conf, safe_mode=False):
         return last_cols, last_rows
 
     except mysql.connector.Error as e:
-        return None, f"MySQL Error: {e}"
+        error_message = f"MySQL Error: {e}"
+        console.print(Panel(error_message, title="SQL Execution Error", style=style_error))
+        return None, error_message
 
     finally:
         if 'conn' in locals() and conn.is_connected():
@@ -569,7 +573,7 @@ def main():
                 conversation_history.append({"user": user_input, "type": plan_data["type"]})
                 
             except json.JSONDecodeError:
-                console.print("Could not parse operation plan, trying simple SQL generation...", style=style_error)
+                console.print(Panel("Could not parse operation plan, trying simple SQL generation...", title="Warning", style=style_warning))
                 # Fallback to original single-query behavior
                 sql_blocks = extract_all_sql_blocks(response.text)
                 if sql_blocks:
@@ -592,7 +596,7 @@ def main():
                         else:
                             console.print(str(result), style=style_success)
         else:
-            console.print("Could not understand the request format", style=style_error)
+            console.print(Panel("Could not understand the request format. Please try again.", title="Error", style=style_error))
 
 
 
