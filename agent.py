@@ -1,38 +1,37 @@
-import yaml
-import google.generativeai as genai
-import mysql.connector
+#!/bin/python3
 import re
-from prompt_toolkit import prompt
-from prompt_toolkit.history import InMemoryHistory
-import threading
-import itertools
-import time
 import sys
+import yaml
+import time
 import json
-from rich.console import Console
+import itertools
+import threading
+import mysql.connector
 from rich.table import Table
-from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.style import Style
-import commonmark
+from rich.console import Console
+from prompt_toolkit import prompt
+from rich.markdown import Markdown
+import google.generativeai as genai
+from prompt_toolkit.history import InMemoryHistory
 
-
-# Initialize Rich Console
+# initialize rich Console
 console = Console()
 
-# Define styles
+# define styles
 style_success = Style(color="green")
 style_error = Style(color="red")
 style_info = Style(color="cyan")
 style_warning = Style(color="yellow")
 style_sql = Style(color="blue", bold=True)
 
-
-# Load config from YAML
+# load config from YAML
 def load_config():
     with open("config.yml", "r") as f:
         return yaml.safe_load(f)
 
+# start loading spinner
 def start_spinner(message="Working..."):
     done = threading.Event()
 
@@ -43,7 +42,7 @@ def start_spinner(message="Working..."):
             sys.stdout.write(f"\r{message} {char}")
             sys.stdout.flush()
             time.sleep(0.1)
-        # Clear the spinner line completely and add newline
+        # clear spinner line completely and add newline
         sys.stdout.write("\r" + " " * (len(message) + 2) + "\r")
         sys.stdout.flush()
 
@@ -52,15 +51,15 @@ def start_spinner(message="Working..."):
     
     def stop_spinner():
         done.set()
-        thread.join()  # Wait for spinner thread to finish
-        # Ensure clean line after spinner
-        print()  # This will add a proper newline
+        thread.join() # wait for spinner thread to finish
+        # ensure clean line after spinner
+        print()  # this will add a proper newline
     
-    # Return the stop function instead of done event
+    # return the stop function instead of done event
     stop_spinner.done = done
     return stop_spinner
 
-
+# test database connection
 def test_db_connection(db_conf):
     try:
         conn = mysql.connector.connect(
@@ -70,7 +69,10 @@ def test_db_connection(db_conf):
             database=db_conf["name"],
             port=db_conf.get("port", 3306),
         )
-        console.print(f"Connected to {db_conf['name']} on {db_conf['host']}:{db_conf.get('port', 3306)} as {db_conf['user']}", style=style_success)
+        console.print(Panel(f"Successfully connected to database [bold cyan]{db_conf['name']}[/bold cyan] on host [bold cyan]{db_conf['host']}:{db_conf.get('port', 3306)}[/bold cyan] with user [bold cyan]{db_conf['user']}[/bold cyan]",
+            title="Database Connection",
+            subtitle="Success",
+            style="green"))
     except mysql.connector.Error as e:
         console.print(f"Failed to connect to database: {e}", style=style_error)
         exit(1)
@@ -389,7 +391,42 @@ Provide ONLY the corrected SQL in triple backticks.
     return execution_history
 
 
+def display_help():
+    """Displays the help message."""
+    console.print(Panel(
+        Markdown(
+            """
+# MySQL AI Agent
+
+This agent connects to a MySQL database and allows you to interact with it using natural language.
+
+## Usage
+
+Run the agent without any arguments to start an interactive session:
+```bash
+python agent.py
+```
+
+## Commands
+
+- `exit` or `quit`: Exit the interactive session.
+- `-h` or `--help`: Display this help message.
+
+## Configuration
+
+The agent is configured through the `config.yml` file.
+"""
+        ),
+        title="Help",
+        style="green"
+    ))
+
+
 def main():
+    if '-h' in sys.argv or '--help' in sys.argv:
+        display_help()
+        return
+
     config = load_config()
     genai.configure(api_key=config["google"]["api_key"])
     model = genai.GenerativeModel(config["google"].get("model", "gemini-1.5-flash"))
@@ -523,6 +560,7 @@ def main():
                             console.print(str(result), style=style_success)
         else:
             console.print("Could not understand the request format", style=style_error)
+
 
 
 
