@@ -1,4 +1,5 @@
 google-generativeai
 mysql-connector-python
 pyyaml
-tabulate
+rich
+commonmark

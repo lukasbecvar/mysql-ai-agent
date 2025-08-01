@@ -1,7 +1,6 @@
 import yaml
 import google.generativeai as genai
 import mysql.connector
-from tabulate import tabulate
 import re
 from prompt_toolkit import prompt
 from prompt_toolkit.history import InMemoryHistory
@@ -10,6 +9,23 @@ import itertools
 import time
 import sys
 import json
+from rich.console import Console
+from rich.table import Table
+from rich.markdown import Markdown
+from rich.panel import Panel
+from rich.style import Style
+import commonmark
+
+
+# Initialize Rich Console
+console = Console()
+
+# Define styles
+style_success = Style(color="green")
+style_error = Style(color="red")
+style_info = Style(color="cyan")
+style_warning = Style(color="yellow")
+style_sql = Style(color="blue", bold=True)
 
 
 # Load config from YAML
@@ -54,9 +70,9 @@ def test_db_connection(db_conf):
             database=db_conf["name"],
             port=db_conf.get("port", 3306),
         )
-        print(f"✅ Connected to {db_conf['name']} on {db_conf['host']}:{db_conf.get('port', 3306)} as {db_conf['user']}")
+        console.print(f"Connected to {db_conf['name']} on {db_conf['host']}:{db_conf.get('port', 3306)} as {db_conf['user']}", style=style_success)
     except mysql.connector.Error as e:
-        print(f"❌ Failed to connect to database: {e}")
+        console.print(f"Failed to connect to database: {e}", style=style_error)
         exit(1)
     finally:
         conn.close()
@@ -125,12 +141,27 @@ def format_result_for_ai(cols, rows):
         for row in limited_rows:
             result_data.append(dict(zip(cols, row)))
     
+    # Create a Rich table for preview
+    table = Table(show_header=True, header_style="bold magenta")
+    for col in cols:
+        table.add_column(col)
+    
+    preview_rows = limited_rows[:5] if isinstance(limited_rows, list) else []
+    for row in preview_rows:
+        table.add_row(*[str(item) for item in row])
+
+    # To send a string representation of the table to the AI
+    from io import StringIO
+    from rich.console import Console
+    capture_console = Console(file=StringIO())
+    capture_console.print(table)
+    preview_str = capture_console.file.getvalue()
+
     return {
         "columns": cols,
         "row_count": len(rows) if isinstance(rows, list) else "unknown",
         "sample_data": result_data,
-        "preview": tabulate(limited_rows[:5] if isinstance(limited_rows, list) else limited_rows, 
-                          headers=cols, tablefmt="grid") if cols else str(limited_rows)
+        "preview": preview_str
     }
 
 
@@ -241,42 +272,42 @@ def execute_multistep_operation(plan, user_request, chat, db_conf):
     execution_history = []
     current_plan = plan.copy()
     
-    print(f"\n🚀 Starting multi-step operation with {len(current_plan)} planned steps")
+    console.print(Panel(f"Starting multi-step operation with {len(current_plan)} planned steps", style=style_info, title="Multi-step Operation"))
     
     for step_idx, step_info in enumerate(current_plan):
-        print(f"\n📋 Step {step_info['step']}: {step_info['description']}")
+        console.print(f"\n[bold cyan]Step {step_info['step']}:[/bold cyan] {step_info['description']}")
         
         # Generate SQL if it depends on previous results
         if step_info['sql'] == 'DEPENDS_ON_PREVIOUS':
             if not execution_history:
-                print("❌ Cannot depend on previous results - no previous steps executed")
+                console.print("Cannot depend on previous results - no previous steps executed", style=style_error)
                 continue
                 
-            print("🔄 Generating SQL based on previous results...")
+            console.print("Generating SQL based on previous results...", style=style_info)
             dependent_prompt = create_dependent_step_prompt(
                 step_info, 
                 execution_history[-1].get('result_data', {}), 
                 user_request
             )
             
-            spinner_done = start_spinner("🧠 Generating dependent SQL")
+            spinner_done = start_spinner("Generating dependent SQL")
             response = chat.send_message(dependent_prompt)
             spinner_done()
             
             sql_blocks = extract_all_sql_blocks(response.text)
             if not sql_blocks:
-                print("❌ Failed to generate SQL for dependent step")
+                console.print("Failed to generate SQL for dependent step", style=style_error)
                 continue
             
             step_info['sql'] = sql_blocks[0]
         
-        print(f"🔹 Executing SQL:\n{step_info['sql']}")
+        console.print(Panel(step_info['sql'], style=style_sql, title="Executing SQL"))
         
         # Execute the SQL
         cols, result = run_sql(step_info['sql'], db_conf)
         
         if isinstance(result, str) and result.startswith("MySQL Error"):
-            print(f"❌ SQL error: {result}")
+            console.print(f"SQL error: {result}", style=style_error)
             # Try to fix the SQL
             fix_prompt = f"""
 Fix this MySQL query that caused an error:
@@ -286,26 +317,33 @@ Error: {result}
 
 Provide ONLY the corrected SQL in triple backticks.
 """
-            print("🔧 Trying to fix SQL...")
+            console.print("Trying to fix SQL...", style=style_warning)
             fix_response = chat.send_message(fix_prompt)
             fixed_sql_blocks = extract_all_sql_blocks(fix_response.text)
             
             if fixed_sql_blocks:
                 step_info['sql'] = fixed_sql_blocks[0]
-                print(f"🛠  Retrying with fixed query:\n{step_info['sql']}")
+                console.print(Panel(step_info['sql'], style=style_sql, title="Retrying with fixed query"))
                 cols, result = run_sql(step_info['sql'], db_conf)
             
             if isinstance(result, str) and result.startswith("MySQL Error"):
-                print(f"❌ Still failed after fix attempt: {result}")
+                console.print(f"Still failed after fix attempt: {result}", style=style_error)
                 continue
         
         # Display results
         if cols:
-            print(tabulate(result[:5], headers=cols, tablefmt="grid"))
-            if len(result) > 5:
-                print(f"... and {len(result) - 5} more rows")
+            table = Table(show_header=True, header_style="bold magenta")
+            for col in cols:
+                table.add_column(col)
+            
+            for row in result[:10]:
+                table.add_row(*[str(item) for item in row])
+            
+            console.print(table)
+            if len(result) > 10:
+                console.print(f"... and {len(result) - 10} more rows")
         else:
-            print(result)
+            console.print(str(result), style=style_success)
         
         # Format results for AI processing
         result_data = format_result_for_ai(cols, result)
@@ -322,12 +360,12 @@ Provide ONLY the corrected SQL in triple backticks.
         
         # Analyze results if needed
         if step_info.get('analysis_needed', False) and step_idx < len(current_plan) - 1:
-            print("🔍 Analyzing results for next steps...")
+            console.print("Analyzing results for next steps...", style=style_info)
             
             remaining_steps = current_plan[step_idx + 1:]
             analysis_prompt = analyze_step_results(step_info, result_data, user_request, remaining_steps)
             
-            spinner_done = start_spinner("🧠 Analyzing results")
+            spinner_done = start_spinner("Analyzing results")
             analysis_response = chat.send_message(analysis_prompt)
             spinner_done()
             
@@ -335,18 +373,18 @@ Provide ONLY the corrected SQL in triple backticks.
             if json_blocks:
                 try:
                     analysis = json.loads(json_blocks[0])
-                    print(f"💡 Analysis: {analysis['explanation']}")
+                    console.print(Panel(analysis['explanation'], style=style_info, title="Analysis"))
                     
                     if analysis['action'] == 'modify' and 'modified_steps' in analysis:
-                        print("🔄 Modifying remaining steps based on analysis...")
+                        console.print("Modifying remaining steps based on analysis...", style=style_warning)
                         # Replace remaining steps with modified ones
                         current_plan = current_plan[:step_idx + 1] + analysis['modified_steps']
                     elif analysis['action'] == 'skip':
-                        print("⏭ Skipping remaining steps based on analysis")
+                        console.print("Skipping remaining steps based on analysis", style=style_warning)
                         break
                         
                 except json.JSONDecodeError:
-                    print("⚠ Could not parse analysis results, continuing with original plan")
+                    console.print("Could not parse analysis results, continuing with original plan", style=style_warning)
     
     return execution_history
 
@@ -365,26 +403,23 @@ def main():
     history = InMemoryHistory()
     conversation_history = []
 
-    print("\nAI MySQL Multi-Step Agent (type 'exit' to quit)")
-    print("Supports both simple queries and complex multi-step operations!")
-
     while True:
         try:
-            user_input = prompt("Enter your request > ", history=history).strip()
+            user_input = prompt("Enter your request > ").strip()
             if not user_input:
                 continue
         except (EOFError, KeyboardInterrupt):
-            print("\nBye!")
+            console.print("\nBye!", style=style_info)
             break
 
         if user_input.lower() in ["exit", "quit"]:
-            print("Bye!")
+            console.print("Bye!", style=style_info)
             break
 
         # Determine if this is a single or multi-step operation
         planning_prompt = create_multistep_prompt(user_input)
         
-        stop_spinner = start_spinner("🧠 Analyzing request")
+        stop_spinner = start_spinner("Analyzing request")
         response = chat.send_message(planning_prompt)
         stop_spinner()
         
@@ -397,22 +432,29 @@ def main():
                 
                 if plan_data["type"] == "single":
                     # Handle single-step operation (original behavior)
-                    print("\n🔹 Single-step operation")
+                    console.print(Panel("Single-step operation", style=style_info, title="Operation Type"))
                     sql_query = plan_data["sql"]
-                    print(f"SQL: {sql_query}")
+                    console.print(Panel(sql_query, style=style_sql, title="SQL Query"))
                     
                     cols, result = run_sql(sql_query, config["database"])
                     
                     if isinstance(result, str) and result.startswith("MySQL Error"):
-                        print(f"❌ SQL error: {result}")
+                        console.print(f"SQL error: {result}", style=style_error)
                         continue
                     
                     if cols:
-                        print(tabulate(result[:10], headers=cols, tablefmt="grid"))
+                        table = Table(show_header=True, header_style="bold magenta")
+                        for col in cols:
+                            table.add_column(col)
+                        
+                        for row in result[:10]:
+                            table.add_row(*[str(item) for item in row])
+                        
+                        console.print(table)
                         if len(result) > 10:
-                            print(f"... and {len(result) - 10} more rows")
+                            console.print(f"... and {len(result) - 10} more rows")
                     else:
-                        print(result)
+                        console.print(str(result), style=style_success)
                     
                     # Get explanation
                     explain_prompt = f"""
@@ -420,15 +462,14 @@ def main():
                     
                     User request: {user_input}
                     SQL: {sql_query}
-                    Result preview: {tabulate(result[:3], headers=cols, tablefmt="grid") if cols else str(result)}
+                    Result preview: {format_result_for_ai(cols, result)['preview']}
                     """
                     
-                    spinner_done = start_spinner("📖 Explaining results")
+                    spinner_done = start_spinner("Explaining results")
                     explain_response = chat.send_message(explain_prompt)
                     spinner_done()
                     
-                    print(f"\n💬 Vysvětlení:\n{explain_response.text.strip()}")
-                    print()  # Add extra newline for better spacing
+                    console.print(Panel(Markdown(explain_response.text.strip()), style=style_info, title="Vysvětlení"))
                     
                 else:
                     # Handle multi-step operation
@@ -449,36 +490,40 @@ def main():
                         Summarize what was accomplished and any key findings.
                         """
                         
-                        spinner_done = start_spinner("📋 Generating summary")
+                        spinner_done = start_spinner("Generating summary")
                         summary_response = chat.send_message(summary_prompt)
                         spinner_done()
                         
-                        print(f"\n📋 Celkové shrnutí:\n{summary_response.text.strip()}")
+                        console.print(Panel(Markdown(summary_response.text.strip()), style=style_info, title="Celkové shrnutí"))
                 
                 conversation_history.append({"user": user_input, "type": plan_data["type"]})
-                print()  # Add extra newline for better spacing
                 
             except json.JSONDecodeError:
-                print("❌ Could not parse operation plan, trying simple SQL generation...")
+                console.print("Could not parse operation plan, trying simple SQL generation...", style=style_error)
                 # Fallback to original single-query behavior
                 sql_blocks = extract_all_sql_blocks(response.text)
                 if sql_blocks:
                     for sql_query in sql_blocks:
-                        print(f"\n🔹 Executing SQL:\n{sql_query}")
+                        console.print(Panel(sql_query, style=style_sql, title="Executing SQL"))
                         cols, result = run_sql(sql_query, config["database"])
                         
                         if isinstance(result, str) and result.startswith("MySQL Error"):
-                            print(f"❌ SQL error: {result}")
+                            console.print(f"SQL error: {result}", style=style_error)
                             continue
                         
                         if cols:
-                            print(tabulate(result[:5], headers=cols, tablefmt="grid"))
+                            table = Table(show_header=True, header_style="bold magenta")
+                            for col in cols:
+                                table.add_column(col)
+                            
+                            for row in result[:5]:
+                                table.add_row(*[str(item) for item in row])
+                            console.print(table)
                         else:
-                            print(result)
-                        print()  # Add extra newline for better spacing
+                            console.print(str(result), style=style_success)
         else:
-            print("❌ Could not understand the request format")
-            print()  # Add extra newline for better spacing
+            console.print("Could not understand the request format", style=style_error)
+
 
 
 if __name__ == "__main__":
