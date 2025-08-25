@@ -49,11 +49,11 @@ def load_config():
             "port": int(os.getenv("DB_PORT", 3306)),
             "user": os.getenv("DB_USER"),
             "password": os.getenv("DB_PASSWORD"),
-            "name": os.getenv("DB_NAME"),
+            "name": os.getenv("DB_NAME")
         },
         "google": {
             "api_key": os.getenv("GOOGLE_API_KEY"),
-            "model": os.getenv("GOOGLE_MODEL", "gemini-1.5-flash"),
+            "model": os.getenv("GOOGLE_MODEL", "gemini-1.5-flash")
         }
     }
 
@@ -94,7 +94,7 @@ def test_db_connection(db_conf):
             user=db_conf["user"],
             password=db_conf["password"],
             database=db_conf["name"],
-            port=db_conf.get("port", 3306),
+            port=db_conf.get("port", 3306)
         )
         console.print(Panel(f"Successfully connected to database [bold cyan]{db_conf['name']}[/bold cyan] on host [bold cyan]{db_conf['host']}:{db_conf.get('port', 3306)}[/bold cyan] with user [bold cyan]{db_conf['user']}[/bold cyan]",
             title="Database Connection",
@@ -166,7 +166,7 @@ def run_sql(sql, db_conf, safe_mode=False):
             user=db_conf["user"],
             password=db_conf["password"],
             database=db_conf["name"],
-            port=db_conf.get("port", 3306),
+            port=db_conf.get("port", 3306)
         )
         cursor = conn.cursor()
 
@@ -587,7 +587,7 @@ def main():
                     explain_response = chat.send_message(explain_prompt)
                     spinner_done()
                     
-                    console.print(Panel(Markdown(explain_response.text.strip()), style=style_info, title="Vysvětlení"))
+                    console.print(Panel(Markdown(explain_response.text.strip()), style=style_info, title="Explanation"))
                     
                 else:
                     # handle multi-step operation
