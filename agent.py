@@ -79,7 +79,7 @@ def start_spinner(message="Working..."):
         done.set()
         thread.join() # wait for spinner thread to finish
         # ensure clean line after spinner
-        print()  # this will add a proper newline
+        print() # this will add a proper newline
     
     # return the stop function instead of done event
     stop_spinner.done = done
@@ -576,7 +576,7 @@ def main():
                         preview = str(result)
 
                     explain_prompt = f"""
-                    Explain the results of this SQL query in Czech:
+                    Explain the results of this SQL query in the same language as the user's request:
                     
                     User request: {user_input}
                     SQL: {sql_query}
@@ -598,7 +598,7 @@ def main():
                     # provide final summary
                     if execution_history:
                         summary_prompt = f"""
-                        Provide a final summary in Czech of this multi-step database operation:
+                        Provide a final summary of this multi-step database operation in the same language as the user's request:
                         
                         Original request: {user_input}
                         
